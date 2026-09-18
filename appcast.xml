@@ -11,5 +11,14 @@
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer.dmg" length="5182356" type="application/octet-stream" sparkle:edSignature="af7e74+y0EmYPViwFcDzjwbEwKJ+QGVAWX1Y8reF7CR4lG8AHFY60OeppGdfQJSgodfW8xa2NdX8jrxe5W/0Cg=="/>
         </item>
+        <item>
+            <title>1.0.0</title>
+            <pubDate>Sat, 19 Sep 2026 07:38:12 +0900</pubDate>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer.dmg" length="5182404" type="application/octet-stream" sparkle:edSignature="/i2rx9wwaCJ94ZvEbdsTM3oKbofaIVzRcrnmqGDBmb3nECIIFHh8eg5DnBrzo7u0GDprgLiU5iSVcrlPSz5fBw=="/>
+        </item>
     </channel>
 </rss>
