@@ -6,10 +6,10 @@
             <title>1.0.1</title>
             <pubDate>Sat, 19 Sep 2026 07:17:00 +0900</pubDate>
             <sparkle:version>1</sparkle:version>
-            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+            <sparkle:shortVersionString>1.0.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://xaruFushigi.github.io/RemoConServer-Releases/RemoConServer.dmg" length="5182346" type="application/octet-stream" sparkle:edSignature="NHrVsSpyKzf0ckf7hct4hiw1iJRi7Fq1ZM/ALdqKFAV+ng8qXTEirOqnevgPbxwcMih0XlcOa9Yjvvb3zjzaAQ=="/>
+            <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer.dmg" length="5182364" type="application/octet-stream" sparkle:edSignature="Rpz9kGrrFTKcH3gu3PLSP3PxYTm5o6gj1RwCjJ+VGwCO2HR9pRz1oOCBRN7XlH3nDmyG/ZOCFGKkRBfopZkcBg=="/>
         </item>
     </channel>
 </rss>
