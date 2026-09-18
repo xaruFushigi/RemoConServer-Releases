@@ -9,7 +9,7 @@
             <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer.dmg" length="5182405" type="application/octet-stream" sparkle:edSignature="RGIwSxm+NQvzwWmrgUfwKU+mLLJm5zZXBPPn5cJaLiqJeOb/sFttbxeg8mme3Gyj/rpXzLuMxhW+Ob1KYfQQAw=="/>
+            <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer.dmg" length="5244613" type="application/octet-stream" sparkle:edSignature="pvuE1naVXPmckaCbO/5+e2yxeS6Zrt4rfFoF/k4P6e+7Cjmq93vTWwSMcTTmQxXfZqXqWp4dB8e717n6KCfjAA=="/>
         </item>
     </channel>
 </rss>
