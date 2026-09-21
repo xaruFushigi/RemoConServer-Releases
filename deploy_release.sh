@@ -44,14 +44,34 @@ find "$STAGING_APP" -type d \( -name "*.framework" -o -name "*.app" -o -name "*.
     fi
 done
 
+echo "Extracting and preserving existing entitlements..."
+ENTITLEMENTS_FILE="$RELEASE_DIR/entitlements.plist"
+codesign -d --entitlements :- "$STAGING_APP" > "$ENTITLEMENTS_FILE" 2>/dev/null || true
+
+if [ -s "$ENTITLEMENTS_FILE" ]; then
+    echo "Stripping get-task-allow entitlement using PlistBuddy..."
+    /usr/libexec/PlistBuddy -c "Delete :com.apple.security.get-task-allow" "$ENTITLEMENTS_FILE" 2>/dev/null || true
+fi
+
+echo "Removing embedded provisioning profile (prevents debugger entitlement conflicts)..."
+rm -f "$STAGING_APP/Contents/embedded.provisionprofile"
+
 echo "Signing main .app bundle..."
-codesign --force --options runtime --timestamp --sign "$APP_SIGNING_IDENTITY" "$STAGING_APP"
+if [ -s "$ENTITLEMENTS_FILE" ]; then
+    # Re-sign using the preserved, cleaned entitlements
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS_FILE" --timestamp --sign "$APP_SIGNING_IDENTITY" "$STAGING_APP"
+else
+    codesign --force --options runtime --timestamp --sign "$APP_SIGNING_IDENTITY" "$STAGING_APP"
+fi
 
 echo "Generating postinstall script..."
 cat << 'EOF' > "$SCRIPTS_DIR/postinstall"
 #!/bin/bash
+# Extract the real user session ID to escape the Installer's root daemon context.
+# Launching via launchctl ensures the app has full WindowServer and TCC UI prompt access.
 LOGGED_IN_USER=$(stat -f "%Su" /dev/console)
-sudo -u "$LOGGED_IN_USER" open "/Applications/RemoConServer.app"
+USER_ID=$(id -u "$LOGGED_IN_USER")
+/bin/launchctl asuser "$USER_ID" /usr/bin/open "/Applications/RemoConServer.app"
 exit 0
 EOF
 chmod +x "$SCRIPTS_DIR/postinstall"
@@ -80,7 +100,7 @@ ORIGINAL_COMMIT_MSG=$(git -C "$RELEASE_DIR" log -1 --pretty=format:"%s" 2>/dev/n
 
 echo "Generating appcast.xml..."
 "$SPARKLE_BIN_DIR/generate_appcast" "$RELEASE_DIR"
-rm -rf "$PAYLOAD_DIR" "$SCRIPTS_DIR"
+rm -rf "$PAYLOAD_DIR" "$SCRIPTS_DIR" "$ENTITLEMENTS_FILE"
 
 echo "Deploying to GitHub Releases..."
 cd "$RELEASE_DIR"
