@@ -48,10 +48,18 @@ echo "Extracting and preserving existing entitlements..."
 ENTITLEMENTS_FILE="$RELEASE_DIR/entitlements.plist"
 codesign -d --entitlements :- "$STAGING_APP" > "$ENTITLEMENTS_FILE" 2>/dev/null || true
 
-if [ -s "$ENTITLEMENTS_FILE" ]; then
-    echo "Stripping get-task-allow entitlement using PlistBuddy..."
-    /usr/libexec/PlistBuddy -c "Delete :com.apple.security.get-task-allow" "$ENTITLEMENTS_FILE" 2>/dev/null || true
+# If the file is empty or missing, create a base empty plist
+if ! grep -q "<plist" "$ENTITLEMENTS_FILE"; then
+    echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict></dict></plist>' > "$ENTITLEMENTS_FILE"
 fi
+
+echo "Configuring entitlements for Hardened Runtime..."
+# 1. Strip debug entitlement (Fixes Notarization)
+/usr/libexec/PlistBuddy -c "Delete :com.apple.security.get-task-allow" "$ENTITLEMENTS_FILE" 2>/dev/null || true
+
+# 2. Inject Apple Events entitlement (Fixes Automation/System Events prompt)
+/usr/libexec/PlistBuddy -c "Add :com.apple.security.automation.apple-events bool true" "$ENTITLEMENTS_FILE" 2>/dev/null || \
+/usr/libexec/PlistBuddy -c "Set :com.apple.security.automation.apple-events true" "$ENTITLEMENTS_FILE" 2>/dev/null
 
 echo "Removing embedded provisioning profile (prevents debugger entitlement conflicts)..."
 rm -f "$STAGING_APP/Contents/embedded.provisionprofile"
