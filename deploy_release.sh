@@ -14,7 +14,16 @@ APP_SIGNING_IDENTITY="Developer ID Application: BOKHODIR ZIEDULLAEV (AMZVHB77Z7)
 PKG_SIGNING_IDENTITY="Developer ID Installer: BOKHODIR ZIEDULLAEV (AMZVHB77Z7)"
 
 SPARKLE_BIN_DIR=$(dirname "$(which generate_appcast 2>/dev/null || find "$HOME/Library/Developer/Xcode/DerivedData" -name generate_appcast -type f 2>/dev/null | head -n 1)")
-APP_PATH=$(mdfind "kMDItemFSName == 'RemoConServer.app'" 2>/dev/null | head -n 1)
+
+echo "Locating the freshest build in Xcode DerivedData..."
+# Aggressively search DerivedData and sort by newest modification time to guarantee we get your latest code
+APP_PATH=$(find "$HOME/Library/Developer/Xcode/DerivedData" -name "RemoConServer.app" -type d -exec stat -f "%m %N" {} + 2>/dev/null | sort -rn | head -n 1 | cut -d ' ' -f 2-)
+
+if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+    echo "❌ Error: Could not find RemoConServer.app. Please hit Cmd+B in Xcode to build the app first!"
+    exit 1
+fi
+echo "✅ Using freshest App build at: $APP_PATH"
 
 mkdir -p "$RELEASE_DIR"
 PAYLOAD_DIR="$RELEASE_DIR/payload"
