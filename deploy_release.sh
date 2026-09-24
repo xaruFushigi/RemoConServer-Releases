@@ -3,8 +3,9 @@ set -e
 
 # Config
 RELEASE_DIR="$HOME/Documents/GitHub/RemoConServer-Releases"
-PKG_PATH="$RELEASE_DIR/RemoConServer.pkg"
-GITHUB_REPO_URL="https://github.com/xaruFushigi/RemoConServer-Releases.git"
+GITHUB_USERNAME="xaruFushigi"
+GITHUB_REPO_URL="https://github.com/$GITHUB_USERNAME/RemoConServer-Releases.git"
+APPCAST_PATH="$RELEASE_DIR/appcast.xml"
 
 APPLE_ID="remocon.app.ios@gmail.com"
 TEAM_ID="AMZVHB77Z7"
@@ -13,7 +14,8 @@ APP_PASS="lijc-xmbk-esvt-xtsw"
 APP_SIGNING_IDENTITY="Developer ID Application: BOKHODIR ZIEDULLAEV (AMZVHB77Z7)"
 PKG_SIGNING_IDENTITY="Developer ID Installer: BOKHODIR ZIEDULLAEV (AMZVHB77Z7)"
 
-SPARKLE_BIN_DIR=$(dirname "$(which generate_appcast 2>/dev/null || find "$HOME/Library/Developer/Xcode/DerivedData" -name generate_appcast -type f 2>/dev/null | head -n 1)")
+# sign_update is what we need now (generate_appcast does NOT support bare .pkg files)
+SPARKLE_BIN_DIR=$(dirname "$(which sign_update 2>/dev/null || find "$HOME/Library/Developer/Xcode/DerivedData" -name sign_update -type f 2>/dev/null | head -n 1)")
 
 echo "Locating the freshest build in Xcode DerivedData..."
 # Aggressively search DerivedData and sort by newest modification time to guarantee we get your latest code
@@ -26,8 +28,7 @@ fi
 echo "✅ Using freshest App build at: $APP_PATH"
 
 echo "Cleaning up stale pkg/zip artifacts from previous runs..."
-# Prevents generate_appcast from mismatching old files to new version entries
-rm -f "$RELEASE_DIR"/RemoConServer.pkg "$RELEASE_DIR"/RemoConServer_*.zip
+rm -f "$RELEASE_DIR"/RemoConServer_v*.pkg "$RELEASE_DIR"/RemoConServer_*.zip "$RELEASE_DIR"/RemoConServer.pkg
 
 mkdir -p "$RELEASE_DIR"
 PAYLOAD_DIR="$RELEASE_DIR/payload"
@@ -40,8 +41,14 @@ cp -R "$APP_PATH" "$PAYLOAD_DIR/RemoConServer.app"
 STAGING_APP="$PAYLOAD_DIR/RemoConServer.app"
 
 VERSION=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "1.0.0")
+BUILD_NUMBER=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleVersion 2>/dev/null || echo "1")
 BUNDLE_ID=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleIdentifier 2>/dev/null || echo "bokhodir.ziedullaev.RemoConServer")
+MIN_OS_VERSION=$(defaults read "$STAGING_APP/Contents/Info.plist" LSMinimumSystemVersion 2>/dev/null || echo "")
 TAG_NAME="v$VERSION"
+
+# Versioned pkg name so each release keeps its own file (fixed name was overwriting prior versions)
+PKG_NAME="RemoConServer_$TAG_NAME.pkg"
+PKG_PATH="$RELEASE_DIR/$PKG_NAME"
 
 echo "Signing nested frameworks and binaries..."
 # 1. Sign Sparkle standalone binary file directly
@@ -117,49 +124,78 @@ xcrun notarytool submit "$PKG_PATH" \
 echo "Stapling notarization ticket..."
 xcrun stapler staple "$PKG_PATH"
 
-# 🪄 Use ditto to zip ONLY the PKG
-echo "Zipping PKG for Sparkle Appcast..."
-ZIP_PATH="$RELEASE_DIR/RemoConServer_$TAG_NAME.zip"
+ORIGINAL_COMMIT_MSG=$(git -C "$RELEASE_DIR" log -1 --pretty=format:"%s" 2>/dev/null || echo "Release $TAG_NAME")
 
-# Create a temporary staging directory to pack the zip
-ZIP_STAGING="$PAYLOAD_DIR/ZipStaging"
-mkdir -p "$ZIP_STAGING"
-cp "$PKG_PATH" "$ZIP_STAGING/"
+echo "Signing pkg with Sparkle EdDSA key..."
+# generate_appcast does NOT support bare .pkg files, so we sign + build the appcast item manually.
+SIGN_OUTPUT=$("$SPARKLE_BIN_DIR/sign_update" "$PKG_PATH")
+ED_SIGNATURE=$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
+FILE_LENGTH=$(echo "$SIGN_OUTPUT" | sed -n 's/.*length="\([^"]*\)".*/\1/p')
 
-# Compress the contents of the staging folder natively
-ditto -c -k --sequesterRsrc "$ZIP_STAGING" "$ZIP_PATH"
+if [ -z "$ED_SIGNATURE" ] || [ -z "$FILE_LENGTH" ]; then
+    echo "❌ Error: sign_update did not return a signature. Output was:"
+    echo "$SIGN_OUTPUT"
+    exit 1
+fi
 
-echo "Generating appcast.xml manually..."
-SIGN_UPDATE_BIN="$SPARKLE_BIN_DIR/sign_update"
-ED_SIG=$("$SIGN_UPDATE_BIN" "$ZIP_PATH")
+PUB_DATE=$(date -u +"%a, %d %b %Y %H:%M:%S %z")
+DOWNLOAD_URL="https://raw.githubusercontent.com/$GITHUB_USERNAME/RemoConServer-Releases/main/$PKG_NAME"
 
-FILE_SIZE=$(stat -f "%z" "$ZIP_PATH")
-BUILD_NUMBER=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleVersion 2>/dev/null || echo "1")
-PUB_DATE=$(date "+%a, %d %b %Y %H:%M:%S %z")
+echo "Updating appcast.xml..."
+python3 - "$APPCAST_PATH" "$VERSION" "$BUILD_NUMBER" "$PUB_DATE" "$DOWNLOAD_URL" "$FILE_LENGTH" "$ED_SIGNATURE" "$MIN_OS_VERSION" << 'PYEOF'
+import sys
+import xml.etree.ElementTree as ET
 
-# Construct the exact raw GitHub user content URL matching your main branch
-DOWNLOAD_URL="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/$(basename "$ZIP_PATH")"
+appcast_path, version, build_number, pub_date, url, length, ed_sig, min_os = sys.argv[1:9]
 
-cat << EOF > "$RELEASE_DIR/appcast.xml"
-<?xml version="1.0" standalone="yes"?>
-<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
-    <channel>
-        <title>RemoConServer</title>
-        <item>
-            <title>$VERSION</title>
-            <pubDate>$PUB_DATE</pubDate>
-            <sparkle:version>$BUILD_NUMBER</sparkle:version>
-            <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="$DOWNLOAD_URL" length="$FILE_SIZE" type="application/octet-stream" sparkle:edSignature="$ED_SIG"/>
-        </item>
-    </channel>
-</rss>
-EOF
+NS = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+ET.register_namespace("sparkle", NS)
+
+try:
+    tree = ET.parse(appcast_path)
+    root = tree.getroot()
+    channel = root.find("channel")
+except (FileNotFoundError, ET.ParseError):
+    root = ET.Element("rss", {"version": "2.0", "xmlns:sparkle": NS})
+    channel = ET.SubElement(root, "channel")
+    title = ET.SubElement(channel, "title")
+    title.text = "RemoConServer"
+    tree = ET.ElementTree(root)
+
+item = ET.Element("item")
+t = ET.SubElement(item, "title")
+t.text = version
+pd = ET.SubElement(item, "pubDate")
+pd.text = pub_date
+sv = ET.SubElement(item, "{%s}version" % NS)
+sv.text = build_number
+ssv = ET.SubElement(item, "{%s}shortVersionString" % NS)
+ssv.text = version
+if min_os:
+    mv = ET.SubElement(item, "{%s}minimumSystemVersion" % NS)
+    mv.text = min_os
+enclosure = ET.SubElement(item, "enclosure", {
+    "url": url,
+    "length": length,
+    "type": "application/octet-stream",
+    "{%s}installationType" % NS: "package",
+    "{%s}edSignature" % NS: ed_sig,
+})
+
+# Insert newest item first, right after any leading metadata elements (title/link/description)
+first_item_index = len(list(channel))
+for i, child in enumerate(channel):
+    if child.tag == "item":
+        first_item_index = i
+        break
+channel.insert(first_item_index, item)
+
+ET.indent(tree, space="    ")
+tree.write(appcast_path, encoding="utf-8", xml_declaration=True)
+print(f"✅ appcast.xml updated with {version} ({build_number})")
+PYEOF
 
 rm -rf "$PAYLOAD_DIR" "$SCRIPTS_DIR" "$ENTITLEMENTS_FILE"
-
-ORIGINAL_COMMIT_MSG=$(git -C "$RELEASE_DIR" log -1 --pretty=format:"%s" 2>/dev/null || echo "Release $TAG_NAME")
 
 echo "Deploying to GitHub Releases..."
 cd "$RELEASE_DIR"
@@ -174,10 +210,10 @@ git commit -m "Update appcast for release $TAG_NAME" || true
 git pull --rebase origin main
 git push origin main
 
-gh release create "$TAG_NAME" "$PKG_PATH" "$ZIP_PATH" \
-    --repo "xaruFushigi/RemoConServer-Releases" \
+gh release create "$TAG_NAME" "$PKG_PATH" \
+    --repo "$GITHUB_USERNAME/RemoConServer-Releases" \
     --title "RemoConServer $TAG_NAME" \
     --notes "$ORIGINAL_COMMIT_MSG" \
     --clobber
 
-echo "✅ Success! PKG signed, notarized, zipped, and deployed."
+echo "✅ Success! PKG signed, notarized, appcast updated, and deployed."

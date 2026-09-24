@@ -1,14 +1,14 @@
-<?xml version="1.0" standalone="yes"?>
-<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
     <channel>
         <title>RemoConServer</title>
         <item>
             <title>1.0.1</title>
-            <pubDate>Thu, 24 Sep 2026 19:19:03 +0900</pubDate>
+            <pubDate>Thu, 24 Sep 2026 10:51:23 +0000</pubDate>
             <sparkle:version>2</sparkle:version>
             <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer_v1.0.1.zip" length="4609384" type="application/octet-stream" sparkle:edSignature="sparkle:edSignature="DDg/NAH/kwWWYs5MUzBxi+/qhnn5ny+fY8OlaGODm8kw8+DYZ0Kyji3YzmrMpDN6Z1BLrXk8k8oh5fCQIwPeCA==" length="4609384""/>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer_v1.0.1.pkg" length="4626320" type="application/octet-stream" sparkle:installationType="package" sparkle:edSignature="8Uxzs7BioDaXj4il8IKX+rTqOs2w9KiTNOnXEl+tiCr2qUsX1jSO+atqB6fbVKlh32y3gFvnk65zjRtzB4wuBA==" />
         </item>
     </channel>
 </rss>
