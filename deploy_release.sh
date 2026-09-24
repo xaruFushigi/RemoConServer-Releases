@@ -25,6 +25,10 @@ if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
 fi
 echo "✅ Using freshest App build at: $APP_PATH"
 
+echo "Cleaning up stale pkg/zip artifacts from previous runs..."
+# Prevents generate_appcast from mismatching old files to new version entries
+rm -f "$RELEASE_DIR"/RemoConServer.pkg "$RELEASE_DIR"/RemoConServer_*.zip
+
 mkdir -p "$RELEASE_DIR"
 PAYLOAD_DIR="$RELEASE_DIR/payload"
 SCRIPTS_DIR="$RELEASE_DIR/scripts"
@@ -113,24 +117,49 @@ xcrun notarytool submit "$PKG_PATH" \
 echo "Stapling notarization ticket..."
 xcrun stapler staple "$PKG_PATH"
 
-# 🪄 NEW: Use ditto to zip both the PKG and the APP together!
-echo "Zipping PKG and App for Sparkle Appcast..."
+# 🪄 Use ditto to zip ONLY the PKG
+echo "Zipping PKG for Sparkle Appcast..."
 ZIP_PATH="$RELEASE_DIR/RemoConServer_$TAG_NAME.zip"
 
 # Create a temporary staging directory to pack the zip
 ZIP_STAGING="$PAYLOAD_DIR/ZipStaging"
 mkdir -p "$ZIP_STAGING"
 cp "$PKG_PATH" "$ZIP_STAGING/"
-cp -R "$STAGING_APP" "$ZIP_STAGING/"
 
 # Compress the contents of the staging folder natively
 ditto -c -k --sequesterRsrc "$ZIP_STAGING" "$ZIP_PATH"
 
-ORIGINAL_COMMIT_MSG=$(git -C "$RELEASE_DIR" log -1 --pretty=format:"%s" 2>/dev/null || echo "Release $TAG_NAME")
+echo "Generating appcast.xml manually..."
+SIGN_UPDATE_BIN="$SPARKLE_BIN_DIR/sign_update"
+ED_SIG=$("$SIGN_UPDATE_BIN" "$ZIP_PATH")
 
-echo "Generating appcast.xml..."
-"$SPARKLE_BIN_DIR/generate_appcast" "$RELEASE_DIR"
+FILE_SIZE=$(stat -f "%z" "$ZIP_PATH")
+BUILD_NUMBER=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleVersion 2>/dev/null || echo "1")
+PUB_DATE=$(date "+%a, %d %b %Y %H:%M:%S %z")
+
+# Construct the exact raw GitHub user content URL matching your main branch
+DOWNLOAD_URL="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/$(basename "$ZIP_PATH")"
+
+cat << EOF > "$RELEASE_DIR/appcast.xml"
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>RemoConServer</title>
+        <item>
+            <title>$VERSION</title>
+            <pubDate>$PUB_DATE</pubDate>
+            <sparkle:version>$BUILD_NUMBER</sparkle:version>
+            <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="$DOWNLOAD_URL" length="$FILE_SIZE" type="application/octet-stream" sparkle:edSignature="$ED_SIG"/>
+        </item>
+    </channel>
+</rss>
+EOF
+
 rm -rf "$PAYLOAD_DIR" "$SCRIPTS_DIR" "$ENTITLEMENTS_FILE"
+
+ORIGINAL_COMMIT_MSG=$(git -C "$RELEASE_DIR" log -1 --pretty=format:"%s" 2>/dev/null || echo "Release $TAG_NAME")
 
 echo "Deploying to GitHub Releases..."
 cd "$RELEASE_DIR"
