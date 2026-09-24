@@ -1,14 +1,14 @@
 <?xml version='1.0' encoding='utf-8'?>
-<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>RemoConServer</title>
         <item>
             <title>1.0.1</title>
-            <pubDate>Thu, 24 Sep 2026 10:51:23 +0000</pubDate>
+            <pubDate>Thu, 24 Sep 2026 10:56:00 +0000</pubDate>
             <sparkle:version>2</sparkle:version>
             <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer_v1.0.1.pkg" length="4626320" type="application/octet-stream" sparkle:installationType="package" sparkle:edSignature="8Uxzs7BioDaXj4il8IKX+rTqOs2w9KiTNOnXEl+tiCr2qUsX1jSO+atqB6fbVKlh32y3gFvnk65zjRtzB4wuBA==" />
+            <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer_v1.0.1.pkg" length="4626307" type="application/octet-stream" sparkle:installationType="package" sparkle:edSignature="nxaLGF/C7NVfkeftPb3k302bL7/Jb8xZ00/cu0ULHrPWfvRSt0o6sHOw2sVLzVGiPX/Gor7+pFdbhqgQUjrkDA==" />
         </item>
     </channel>
 </rss>

@@ -27,6 +27,11 @@ if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
 fi
 echo "✅ Using freshest App build at: $APP_PATH"
 
+echo "Syncing local release dir with GitHub before editing appcast.xml..."
+if [ -d "$RELEASE_DIR/.git" ]; then
+    git -C "$RELEASE_DIR" pull --rebase origin main || true
+fi
+
 echo "Cleaning up stale pkg/zip artifacts from previous runs..."
 rm -f "$RELEASE_DIR"/RemoConServer_v*.pkg "$RELEASE_DIR"/RemoConServer_*.zip "$RELEASE_DIR"/RemoConServer.pkg
 
@@ -156,7 +161,10 @@ try:
     root = tree.getroot()
     channel = root.find("channel")
 except (FileNotFoundError, ET.ParseError):
-    root = ET.Element("rss", {"version": "2.0", "xmlns:sparkle": NS})
+    # Don't set xmlns:sparkle manually here -- register_namespace() above already
+    # makes ElementTree emit it once during write(); adding it here too produced
+    # a duplicate xmlns:sparkle attribute, which is invalid XML and broke Sparkle's parser.
+    root = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(root, "channel")
     title = ET.SubElement(channel, "title")
     title.text = "RemoConServer"
