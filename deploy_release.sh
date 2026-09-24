@@ -113,6 +113,19 @@ xcrun notarytool submit "$PKG_PATH" \
 echo "Stapling notarization ticket..."
 xcrun stapler staple "$PKG_PATH"
 
+# 🪄 NEW: Use ditto to zip both the PKG and the APP together!
+echo "Zipping PKG and App for Sparkle Appcast..."
+ZIP_PATH="$RELEASE_DIR/RemoConServer_$TAG_NAME.zip"
+
+# Create a temporary staging directory to pack the zip
+ZIP_STAGING="$PAYLOAD_DIR/ZipStaging"
+mkdir -p "$ZIP_STAGING"
+cp "$PKG_PATH" "$ZIP_STAGING/"
+cp -R "$STAGING_APP" "$ZIP_STAGING/"
+
+# Compress the contents of the staging folder natively
+ditto -c -k --sequesterRsrc "$ZIP_STAGING" "$ZIP_PATH"
+
 ORIGINAL_COMMIT_MSG=$(git -C "$RELEASE_DIR" log -1 --pretty=format:"%s" 2>/dev/null || echo "Release $TAG_NAME")
 
 echo "Generating appcast.xml..."
@@ -132,10 +145,10 @@ git commit -m "Update appcast for release $TAG_NAME" || true
 git pull --rebase origin main
 git push origin main
 
-gh release create "$TAG_NAME" "$PKG_PATH" \
+gh release create "$TAG_NAME" "$PKG_PATH" "$ZIP_PATH" \
     --repo "xaruFushigi/RemoConServer-Releases" \
     --title "RemoConServer $TAG_NAME" \
     --notes "$ORIGINAL_COMMIT_MSG" \
     --clobber
 
-echo "✅ Success! PKG signed, notarized, and deployed."
+echo "✅ Success! PKG signed, notarized, zipped, and deployed."
