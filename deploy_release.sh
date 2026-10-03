@@ -43,6 +43,7 @@ mkdir -p "$PAYLOAD_DIR" "$SCRIPTS_DIR"
 
 echo "Copying .app to payload directory..."
 cp -R "$APP_PATH" "$PAYLOAD_DIR/RemoConServer.app"
+xattr -cr "$STAGING_APP"
 STAGING_APP="$PAYLOAD_DIR/RemoConServer.app"
 
 VERSION=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "1.0.0")
