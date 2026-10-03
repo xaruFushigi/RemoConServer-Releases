@@ -14,18 +14,16 @@ APP_PASS="lijc-xmbk-esvt-xtsw"
 APP_SIGNING_IDENTITY="Developer ID Application: BOKHODIR ZIEDULLAEV (AMZVHB77Z7)"
 PKG_SIGNING_IDENTITY="Developer ID Installer: BOKHODIR ZIEDULLAEV (AMZVHB77Z7)"
 
-# sign_update is what we need now (generate_appcast does NOT support bare .pkg files)
 SPARKLE_BIN_DIR=$(dirname "$(which sign_update 2>/dev/null || find "$HOME/Library/Developer/Xcode/DerivedData" -name sign_update -type f 2>/dev/null | head -n 1)")
 
-echo "Locating the freshest build in Xcode DerivedData..."
-# Aggressively search DerivedData and sort by newest modification time to guarantee we get your latest code
-APP_PATH=$(find "$HOME/Library/Developer/Xcode/DerivedData" -name "RemoConServer.app" -type d -exec stat -f "%m %N" {} + 2>/dev/null | sort -rn | head -n 1 | cut -d ' ' -f 2-)
+echo "Locating the Release build in Xcode DerivedData..."
+APP_PATH="/Users/bokhodirziedullaev/Library/Developer/Xcode/DerivedData/RemoConServer-fbfrjpjitqxgftffddlyzetfuqpw/Build/Products/Release/RemoConServer.app"
 
 if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-    echo "❌ Error: Could not find RemoConServer.app. Please hit Cmd+B in Xcode to build the app first!"
+    echo "❌ Error: Could not find RemoConServer.app at $APP_PATH. Please build the Release scheme in Xcode first!"
     exit 1
 fi
-echo "✅ Using freshest App build at: $APP_PATH"
+echo "✅ Using App build at: $APP_PATH"
 
 echo "Syncing local release dir with GitHub before editing appcast.xml..."
 if [ -d "$RELEASE_DIR/.git" ]; then
@@ -43,8 +41,10 @@ mkdir -p "$PAYLOAD_DIR" "$SCRIPTS_DIR"
 
 echo "Copying .app to payload directory..."
 cp -R "$APP_PATH" "$PAYLOAD_DIR/RemoConServer.app"
-xattr -cr "$STAGING_APP"
 STAGING_APP="$PAYLOAD_DIR/RemoConServer.app"
+
+# Strip extended attributes from payload to ensure clean codesign
+xattr -cr "$STAGING_APP"
 
 VERSION=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "1.0.0")
 BUILD_NUMBER=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleVersion 2>/dev/null || echo "1")
@@ -52,18 +52,15 @@ BUNDLE_ID=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleIdentifier 
 MIN_OS_VERSION=$(defaults read "$STAGING_APP/Contents/Info.plist" LSMinimumSystemVersion 2>/dev/null || echo "")
 TAG_NAME="v$VERSION"
 
-# Versioned pkg name so each release keeps its own file (fixed name was overwriting prior versions)
 PKG_NAME="RemoConServer_$TAG_NAME.pkg"
 PKG_PATH="$RELEASE_DIR/$PKG_NAME"
 
 echo "Signing nested frameworks and binaries..."
-# 1. Sign Sparkle standalone binary file directly
 SPARKLE_AUTOUPDATE="$STAGING_APP/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
 if [ -f "$SPARKLE_AUTOUPDATE" ]; then
     codesign --force --options runtime --timestamp --sign "$APP_SIGNING_IDENTITY" "$SPARKLE_AUTOUPDATE"
 fi
 
-# 2. Deep sign inside-out framework directories
 find "$STAGING_APP" -type d \( -name "*.framework" -o -name "*.app" -o -name "*.xpc" -o -name "*.bundle" \) | awk '{ print length, $0 }' | sort -rn | cut -d" " -f2- | while read -r component; do
     if [ "$component" != "$STAGING_APP" ]; then
         codesign --force --options runtime --timestamp --sign "$APP_SIGNING_IDENTITY" "$component"
@@ -74,25 +71,20 @@ echo "Extracting and preserving existing entitlements..."
 ENTITLEMENTS_FILE="$RELEASE_DIR/entitlements.plist"
 codesign -d --entitlements :- "$STAGING_APP" > "$ENTITLEMENTS_FILE" 2>/dev/null || true
 
-# If the file is empty or missing, create a base empty plist
 if ! grep -q "<plist" "$ENTITLEMENTS_FILE"; then
     echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict></dict></plist>' > "$ENTITLEMENTS_FILE"
 fi
 
 echo "Configuring entitlements for Hardened Runtime..."
-# 1. Strip debug entitlement (Fixes Notarization)
 /usr/libexec/PlistBuddy -c "Delete :com.apple.security.get-task-allow" "$ENTITLEMENTS_FILE" 2>/dev/null || true
-
-# 2. Inject Apple Events entitlement (Fixes Automation/System Events prompt)
 /usr/libexec/PlistBuddy -c "Add :com.apple.security.automation.apple-events bool true" "$ENTITLEMENTS_FILE" 2>/dev/null || \
 /usr/libexec/PlistBuddy -c "Set :com.apple.security.automation.apple-events true" "$ENTITLEMENTS_FILE" 2>/dev/null
 
-echo "Removing embedded provisioning profile (prevents debugger entitlement conflicts)..."
+echo "Removing embedded provisioning profile..."
 rm -f "$STAGING_APP/Contents/embedded.provisionprofile"
 
 echo "Signing main .app bundle..."
 if [ -s "$ENTITLEMENTS_FILE" ]; then
-    # Re-sign using the preserved, cleaned entitlements
     codesign --force --options runtime --entitlements "$ENTITLEMENTS_FILE" --timestamp --sign "$APP_SIGNING_IDENTITY" "$STAGING_APP"
 else
     codesign --force --options runtime --timestamp --sign "$APP_SIGNING_IDENTITY" "$STAGING_APP"
@@ -101,8 +93,6 @@ fi
 echo "Generating postinstall script..."
 cat << 'EOF' > "$SCRIPTS_DIR/postinstall"
 #!/bin/bash
-# Extract the real user session ID to escape the Installer's root daemon context.
-# Launching via launchctl ensures the app has full WindowServer and TCC UI prompt access.
 LOGGED_IN_USER=$(stat -f "%Su" /dev/console)
 USER_ID=$(id -u "$LOGGED_IN_USER")
 /bin/launchctl asuser "$USER_ID" /usr/bin/open "/Applications/RemoConServer.app"
@@ -133,7 +123,6 @@ xcrun stapler staple "$PKG_PATH"
 ORIGINAL_COMMIT_MSG=$(git -C "$RELEASE_DIR" log -1 --pretty=format:"%s" 2>/dev/null || echo "Release $TAG_NAME")
 
 echo "Signing pkg with Sparkle EdDSA key..."
-# generate_appcast does NOT support bare .pkg files, so we sign + build the appcast item manually.
 SIGN_OUTPUT=$("$SPARKLE_BIN_DIR/sign_update" "$PKG_PATH")
 ED_SIGNATURE=$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
 FILE_LENGTH=$(echo "$SIGN_OUTPUT" | sed -n 's/.*length="\([^"]*\)".*/\1/p')
@@ -162,9 +151,6 @@ try:
     root = tree.getroot()
     channel = root.find("channel")
 except (FileNotFoundError, ET.ParseError):
-    # Don't set xmlns:sparkle manually here -- register_namespace() above already
-    # makes ElementTree emit it once during write(); adding it here too produced
-    # a duplicate xmlns:sparkle attribute, which is invalid XML and broke Sparkle's parser.
     root = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(root, "channel")
     title = ET.SubElement(channel, "title")
@@ -191,7 +177,6 @@ enclosure = ET.SubElement(item, "enclosure", {
     "{%s}edSignature" % NS: ed_sig,
 })
 
-# Insert newest item first, right after any leading metadata elements (title/link/description)
 first_item_index = len(list(channel))
 for i, child in enumerate(channel):
     if child.tag == "item":
