@@ -4,6 +4,14 @@
         <title>RemoConServer</title>
         <item>
             <title>1.0.2</title>
+            <pubDate>Tue, 06 Oct 2026 04:04:23 +0000</pubDate>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>1.0.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://raw.githubusercontent.com/xaruFushigi/RemoConServer-Releases/main/RemoConServer_v1.0.2.pkg" length="4468674" type="application/octet-stream" sparkle:installationType="package" sparkle:edSignature="nxzGLcwmBzvAkw/16Xa8dKTWUsZvjNihJlyJ374OqQDgPFlPs6iWiv3HiNosi2Mpyd38hgoYlnBnSBruZJVqBw==" />
+        </item>
+        <item>
+            <title>1.0.2</title>
             <pubDate>Tue, 06 Oct 2026 04:01:17 +0000</pubDate>
             <sparkle:version>1</sparkle:version>
             <sparkle:shortVersionString>1.0.2</sparkle:shortVersionString>
