@@ -27,7 +27,9 @@ echo "✅ Using App build at: $APP_PATH"
 
 echo "Syncing local release dir with GitHub before editing appcast.xml..."
 if [ -d "$RELEASE_DIR/.git" ]; then
+    git -C "$RELEASE_DIR" stash || true
     git -C "$RELEASE_DIR" pull --rebase origin main || true
+    git -C "$RELEASE_DIR" stash pop || true
 fi
 
 echo "Cleaning up stale pkg/zip artifacts from previous runs..."
@@ -40,7 +42,7 @@ rm -rf "$PAYLOAD_DIR" "$SCRIPTS_DIR"
 mkdir -p "$PAYLOAD_DIR" "$SCRIPTS_DIR"
 
 echo "Copying .app to payload directory..."
-cp -R "$APP_PATH" "$PAYLOAD_DIR/RemoConServer.app"
+ditto "$APP_PATH" "$PAYLOAD_DIR/RemoConServer.app"
 STAGING_APP="$PAYLOAD_DIR/RemoConServer.app"
 
 # Strip extended attributes from payload to ensure clean codesign
