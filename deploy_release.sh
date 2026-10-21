@@ -1,108 +1,226 @@
-#!/bin/env bash
-set -e
+#!/usr/bin/env bash
+# RemoConServer release: archive -> export (Developer ID) -> pkg -> notarize -> Sparkle appcast -> GitHub
+# Usage:  bash deploy_release.sh        (do NOT use sudo)
+set -euo pipefail
 
-# Config
-RELEASE_DIR="$HOME/Documents/GitHub/RemoConServer-Releases"
-GITHUB_USERNAME="xaruFushigi"
-GITHUB_REPO_URL="https://github.com/$GITHUB_USERNAME/RemoConServer-Releases.git"
-APPCAST_PATH="$RELEASE_DIR/appcast.xml"
-
-APPLE_ID="remocon.app.ios@gmail.com"
-TEAM_ID="AMZVHB77Z7"
-APP_PASS="lijc-xmbk-esvt-xtsw"
-
-APP_SIGNING_IDENTITY="Developer ID Application: BOKHODIR ZIEDULLAEV (AMZVHB77Z7)"
-PKG_SIGNING_IDENTITY="Developer ID Installer: BOKHODIR ZIEDULLAEV (AMZVHB77Z7)"
-
-SPARKLE_BIN_DIR=$(dirname "$(which sign_update 2>/dev/null || find "$HOME/Library/Developer/Xcode/DerivedData" -name sign_update -type f 2>/dev/null | head -n 1)")
-
-echo "Locating the Release build in Xcode DerivedData..."
-APP_PATH="/Users/bokhodirziedullaev/Library/Developer/Xcode/DerivedData/RemoConServer-fbfrjpjitqxgftffddlyzetfuqpw/Build/Products/Release/RemoConServer.app"
-
-if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-    echo "❌ Error: Could not find RemoConServer.app at $APP_PATH. Please build the Release scheme in Xcode first!"
+if [ "$EUID" -eq 0 ]; then
+    echo "❌ Don't run this with sudo. Run: bash deploy_release.sh"
     exit 1
 fi
-echo "✅ Using App build at: $APP_PATH"
 
-echo "Syncing local release dir with GitHub before editing appcast.xml..."
-if [ -d "$RELEASE_DIR/.git" ]; then
-    git -C "$RELEASE_DIR" stash || true
-    git -C "$RELEASE_DIR" pull --rebase origin main || true
-    git -C "$RELEASE_DIR" stash pop || true
+# ---------------------------------------------------------------- config
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${RELEASE_CONFIG:-$SCRIPT_DIR/release.config}"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "❌ Missing $CONFIG_FILE. Copy release.config.example to release.config and fill it in."
+    exit 1
 fi
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
 
-echo "Cleaning up stale pkg/zip artifacts from previous runs..."
-rm -f "$RELEASE_DIR"/RemoConServer_v*.pkg "$RELEASE_DIR"/RemoConServer_*.zip "$RELEASE_DIR"/RemoConServer.pkg
-
-mkdir -p "$RELEASE_DIR"
-PAYLOAD_DIR="$RELEASE_DIR/payload"
-SCRIPTS_DIR="$RELEASE_DIR/scripts"
-rm -rf "$PAYLOAD_DIR" "$SCRIPTS_DIR"
-mkdir -p "$PAYLOAD_DIR" "$SCRIPTS_DIR"
-
-echo "Copying .app to payload directory..."
-ditto "$APP_PATH" "$PAYLOAD_DIR/RemoConServer.app"
-STAGING_APP="$PAYLOAD_DIR/RemoConServer.app"
-
-# Strip extended attributes from payload to ensure clean codesign
-xattr -cr "$STAGING_APP"
-
-VERSION=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "1.0.0")
-BUILD_NUMBER=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleVersion 2>/dev/null || echo "1")
-BUNDLE_ID=$(defaults read "$STAGING_APP/Contents/Info.plist" CFBundleIdentifier 2>/dev/null || echo "bokhodir.ziedullaev.RemoConServer")
-MIN_OS_VERSION=$(defaults read "$STAGING_APP/Contents/Info.plist" LSMinimumSystemVersion 2>/dev/null || echo "")
-TAG_NAME="v$VERSION"
-
-PKG_NAME="RemoConServer_$TAG_NAME.pkg"
-PKG_PATH="$RELEASE_DIR/$PKG_NAME"
-
-echo "Signing nested frameworks and binaries..."
-SPARKLE_AUTOUPDATE="$STAGING_APP/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
-if [ -f "$SPARKLE_AUTOUPDATE" ]; then
-    codesign --force --options runtime --timestamp --sign "$APP_SIGNING_IDENTITY" "$SPARKLE_AUTOUPDATE"
-fi
-
-find "$STAGING_APP" -type d \( -name "*.framework" -o -name "*.app" -o -name "*.xpc" -o -name "*.bundle" \) | awk '{ print length, $0 }' | sort -rn | cut -d" " -f2- | while read -r component; do
-    if [ "$component" != "$STAGING_APP" ]; then
-        codesign --force --options runtime --timestamp --sign "$APP_SIGNING_IDENTITY" "$component"
+for var in PROJECT_DIR SCHEME RELEASE_DIR GITHUB_USERNAME APPLE_ID TEAM_ID APP_PASS PKG_SIGNING_IDENTITY; do
+    if [ -z "${!var:-}" ]; then
+        echo "❌ $var is empty in $CONFIG_FILE"
+        exit 1
     fi
 done
 
-echo "Extracting and preserving existing entitlements..."
-ENTITLEMENTS_FILE="$RELEASE_DIR/entitlements.plist"
-codesign -d --entitlements :- "$STAGING_APP" > "$ENTITLEMENTS_FILE" 2>/dev/null || true
+REPO_NAME="RemoConServer-Releases"
+APPCAST_PATH="$RELEASE_DIR/appcast.xml"
+WORK_DIR="$HOME/.remocon-release-build"          # outside the git repo, wiped every run
 
-if ! grep -q "<plist" "$ENTITLEMENTS_FILE"; then
-    echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict></dict></plist>' > "$ENTITLEMENTS_FILE"
-fi
+# ---------------------------------------------------------------- helpers
+retry() {  # retry <times> <delay> cmd...   (for flaky network steps)
+    local times="$1" delay="$2" n=1
+    shift 2
+    until "$@"; do
+        if [ "$n" -ge "$times" ]; then return 1; fi
+        echo "⚠️  Failed (attempt $n/$times): $*  -- retrying in ${delay}s" >&2
+        n=$((n + 1))
+        sleep "$delay"
+    done
+}
 
-echo "Configuring entitlements for Hardened Runtime..."
-/usr/libexec/PlistBuddy -c "Delete :com.apple.security.get-task-allow" "$ENTITLEMENTS_FILE" 2>/dev/null || true
-/usr/libexec/PlistBuddy -c "Add :com.apple.security.automation.apple-events bool true" "$ENTITLEMENTS_FILE" 2>/dev/null || \
-/usr/libexec/PlistBuddy -c "Set :com.apple.security.automation.apple-events true" "$ENTITLEMENTS_FILE" 2>/dev/null
-
-echo "Removing embedded provisioning profile..."
-rm -f "$STAGING_APP/Contents/embedded.provisionprofile"
-
-echo "Signing main .app bundle..."
-if [ -s "$ENTITLEMENTS_FILE" ]; then
-    codesign --force --options runtime --entitlements "$ENTITLEMENTS_FILE" --timestamp --sign "$APP_SIGNING_IDENTITY" "$STAGING_APP"
+# ---------------------------------------------------------------- 1. archive
+echo "▶ 1/7 Locating Xcode project..."
+CONTAINER_FLAG=()
+WORKSPACE=$(find "$PROJECT_DIR" -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+PROJECT=$(find "$PROJECT_DIR" -maxdepth 1 -name "*.xcodeproj" | head -n 1)
+if [ -n "$WORKSPACE" ]; then
+    CONTAINER_FLAG=(-workspace "$WORKSPACE")
+    echo "   using workspace: $WORKSPACE"
+elif [ -n "$PROJECT" ]; then
+    CONTAINER_FLAG=(-project "$PROJECT")
+    echo "   using project: $PROJECT"
 else
-    codesign --force --options runtime --timestamp --sign "$APP_SIGNING_IDENTITY" "$STAGING_APP"
+    echo "❌ No .xcworkspace or .xcodeproj found in $PROJECT_DIR"
+    exit 1
 fi
 
-echo "Generating postinstall script..."
-cat << 'EOF' > "$SCRIPTS_DIR/postinstall"
+echo "▶ 2/7 Archiving (clean Release build, this takes a while)..."
+rm -rf "$WORK_DIR"
+mkdir -p "$WORK_DIR"
+ARCHIVE_PATH="$WORK_DIR/$SCHEME.xcarchive"
+DERIVED="$WORK_DIR/DerivedData"
+
+# Signing during the build needs Apple's timestamp server; a dropped request fails the whole
+# archive. The compiled code is cached in DerivedData, so a retry is quick.
+do_archive() {
+    rm -rf "$ARCHIVE_PATH"
+    xcodebuild archive \
+        "${CONTAINER_FLAG[@]}" \
+        -scheme "$SCHEME" \
+        -configuration Release \
+        -destination 'generic/platform=macOS' \
+        -archivePath "$ARCHIVE_PATH" \
+        -derivedDataPath "$DERIVED" \
+        -allowProvisioningUpdates \
+        ENABLE_HARDENED_RUNTIME=YES \
+        -quiet
+}
+retry 5 10 do_archive
+
+echo "▶ 3/7 Exporting with Developer ID signing (Xcode signs all nested frameworks)..."
+
+# Some prebuilt frameworks (e.g. MediaRemoteAdapter) ship malformed:
+#  - the top-level binary is a real file instead of a symlink to Versions/Current/<binary>
+#    (makes codesign say "bundle format is ambiguous")
+#  - Info.plist lacks CFBundleSupportedPlatforms (makes export say "Couldn't find platform family")
+# Repair both inside the archive. Export re-signs everything afterwards, so this is safe.
+repair_frameworks() {
+    local app="$1" fw exec_name plist
+    while IFS= read -r fw; do
+        # (a) CFBundleSupportedPlatforms
+        for plist in "$fw"/Versions/*/Resources/Info.plist; do
+            [ -f "$plist" ] || continue
+            python3 -I - "$plist" << 'PYEOF'
+import plistlib, sys
+path = sys.argv[1]
+with open(path, "rb") as f:
+    data = plistlib.load(f)
+if "CFBundleSupportedPlatforms" not in data:
+    data["CFBundleSupportedPlatforms"] = ["MacOSX"]
+    with open(path, "wb") as f:
+        plistlib.dump(data, f, fmt=plistlib.FMT_XML)
+    print("   repaired: added CFBundleSupportedPlatforms to " + path)
+PYEOF
+        done
+        # (b) top-level binary must be a symlink into Versions/Current
+        plist=$(ls "$fw"/Versions/*/Resources/Info.plist 2>/dev/null | head -n 1 || true)
+        [ -n "$plist" ] || continue
+        exec_name=$(python3 -I -c "import plistlib,sys; print(plistlib.load(open(sys.argv[1],'rb')).get('CFBundleExecutable',''))" "$plist")
+        if [ -n "$exec_name" ] && [ -f "$fw/$exec_name" ] && [ ! -L "$fw/$exec_name" ] && [ -e "$fw/Versions/Current/$exec_name" ]; then
+            rm -f "$fw/$exec_name"
+            ln -s "Versions/Current/$exec_name" "$fw/$exec_name"
+            echo "   repaired: $fw/$exec_name is now a symlink"
+        fi
+    done < <(find "$app" -type d -name "*.framework")
+}
+
+ARCHIVED_APP=$(find "$ARCHIVE_PATH/Products/Applications" -maxdepth 1 -name "*.app" -type d | head -n 1)
+if [ -n "$ARCHIVED_APP" ]; then
+    repair_frameworks "$ARCHIVED_APP"
+fi
+
+EXPORT_DIR="$WORK_DIR/export"
+cat > "$WORK_DIR/ExportOptions.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key><string>developer-id</string>
+    <key>teamID</key><string>$TEAM_ID</string>
+    <key>signingStyle</key><string>automatic</string>
+</dict>
+</plist>
+EOF
+
+# Export signs many files and each needs Apple's timestamp server; one dropped request fails the
+# whole export. The archive is already built, so simply retry the export.
+do_export() {
+    rm -rf "$EXPORT_DIR"
+    xcodebuild -exportArchive \
+        -archivePath "$ARCHIVE_PATH" \
+        -exportPath "$EXPORT_DIR" \
+        -exportOptionsPlist "$WORK_DIR/ExportOptions.plist" \
+        -allowProvisioningUpdates
+}
+retry 5 10 do_export
+
+APP_PATH=$(find "$EXPORT_DIR" -maxdepth 1 -name "*.app" -type d | head -n 1)
+if [ -z "$APP_PATH" ]; then
+    echo "❌ Export produced no .app in $EXPORT_DIR"
+    exit 1
+fi
+APP_NAME=$(basename "$APP_PATH")
+echo "   exported: $APP_PATH"
+
+echo "   verifying signature..."
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+# Notarization rejects apps without the hardened runtime; catch it now instead of after the upload.
+SIGN_INFO=$(codesign -dv --verbose=4 "$APP_PATH" 2>&1 || true)
+FLAGS_LINE=$(grep -m1 "flags=" <<< "$SIGN_INFO" || true)
+echo "   signature flags: ${FLAGS_LINE:-<none found>}"
+if ! grep -q "flags=.*runtime" <<< "$SIGN_INFO"; then
+    echo "❌ The exported app does not have the hardened runtime enabled."
+    echo "   In Xcode: target → Signing & Capabilities → add/enable 'Hardened Runtime', then run again."
+    exit 1
+fi
+echo "   hardened runtime: enabled"
+
+# With the hardened runtime on, controlling other apps (System Events etc.) needs this entitlement.
+ENTITLEMENTS_INFO=$(codesign -d --entitlements :- "$APP_PATH" 2>/dev/null || true)
+if ! grep -q "com.apple.security.automation.apple-events" <<< "$ENTITLEMENTS_INFO"; then
+    echo "⚠️  The app lacks the Apple Events entitlement (com.apple.security.automation.apple-events)."
+    echo "   If RemoCon controls other apps, enable it in Xcode: Signing & Capabilities → Hardened Runtime → Apple Events."
+fi
+
+PLIST="$APP_PATH/Contents/Info.plist"
+VERSION=$(defaults read "$PLIST" CFBundleShortVersionString)
+BUILD_NUMBER=$(defaults read "$PLIST" CFBundleVersion)
+BUNDLE_ID=$(defaults read "$PLIST" CFBundleIdentifier)
+MIN_OS_VERSION=$(defaults read "$PLIST" LSMinimumSystemVersion 2>/dev/null || echo "")
+TAG_NAME="v$VERSION"
+PKG_NAME="RemoConServer_$TAG_NAME.pkg"
+PKG_PATH="$RELEASE_DIR/$PKG_NAME"
+echo "   version $VERSION (build $BUILD_NUMBER), bundle id $BUNDLE_ID"
+
+# Guard: Sparkle compares build numbers; refuse to publish one that is already in the appcast.
+if [ -f "$APPCAST_PATH" ] && grep -q "<sparkle:version>$BUILD_NUMBER</sparkle:version>" "$APPCAST_PATH"; then
+    echo "❌ Build number $BUILD_NUMBER is already in appcast.xml."
+    echo "   Increase the build number (CFBundleVersion) in Xcode, then run again."
+    exit 1
+fi
+
+SIGN_UPDATE=$(find "$DERIVED/SourcePackages" -type f -name sign_update 2>/dev/null | head -n 1)
+if [ -z "$SIGN_UPDATE" ]; then
+    SIGN_UPDATE=$(command -v sign_update || true)
+fi
+if [ -z "$SIGN_UPDATE" ]; then
+    echo "❌ Could not find Sparkle's sign_update tool."
+    exit 1
+fi
+
+# ---------------------------------------------------------------- 2. pkg
+echo "▶ 4/7 Building signed PKG..."
+PAYLOAD_DIR="$WORK_DIR/payload"
+SCRIPTS_DIR="$WORK_DIR/scripts"
+mkdir -p "$PAYLOAD_DIR" "$SCRIPTS_DIR"
+ditto "$APP_PATH" "$PAYLOAD_DIR/$APP_NAME"
+
+cat > "$SCRIPTS_DIR/postinstall" << EOF
 #!/bin/bash
-LOGGED_IN_USER=$(stat -f "%Su" /dev/console)
-USER_ID=$(id -u "$LOGGED_IN_USER")
-/bin/launchctl asuser "$USER_ID" /usr/bin/open "/Applications/RemoConServer.app"
+# Relaunch the app in the logged-in user's GUI session after install.
+LOGGED_IN_USER=\$(stat -f "%Su" /dev/console)
+USER_ID=\$(id -u "\$LOGGED_IN_USER")
+/bin/launchctl asuser "\$USER_ID" /usr/bin/open "/Applications/$APP_NAME"
 exit 0
 EOF
 chmod +x "$SCRIPTS_DIR/postinstall"
 
-echo "Building PKG..."
+mkdir -p "$RELEASE_DIR"
+rm -f "$PKG_PATH"
 pkgbuild --root "$PAYLOAD_DIR" \
          --install-location "/Applications" \
          --scripts "$SCRIPTS_DIR" \
@@ -112,33 +230,43 @@ pkgbuild --root "$PAYLOAD_DIR" \
          --timestamp \
          "$PKG_PATH"
 
-echo "Submitting to Apple Notary Service..."
-xcrun notarytool submit "$PKG_PATH" \
+# ---------------------------------------------------------------- 3. notarize
+echo "▶ 5/7 Notarizing (waits for Apple)..."
+NOTARY_OUT=$(xcrun notarytool submit "$PKG_PATH" \
     --apple-id "$APPLE_ID" \
     --team-id "$TEAM_ID" \
     --password "$APP_PASS" \
-    --wait
+    --wait 2>&1) || true
+echo "$NOTARY_OUT"
+if ! echo "$NOTARY_OUT" | grep -q "status: Accepted"; then
+    echo "❌ Notarization was not accepted. Apple's log for this submission:"
+    SUBMISSION_ID=$(echo "$NOTARY_OUT" | sed -n 's/^ *id: *\([0-9a-f-]\{36\}\).*/\1/p' | head -n 1)
+    if [ -n "$SUBMISSION_ID" ]; then
+        xcrun notarytool log "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASS" || true
+    fi
+    exit 1
+fi
+retry 3 5 xcrun stapler staple "$PKG_PATH"
 
-echo "Stapling notarization ticket..."
-xcrun stapler staple "$PKG_PATH"
-
-ORIGINAL_COMMIT_MSG=$(git -C "$RELEASE_DIR" log -1 --pretty=format:"%s" 2>/dev/null || echo "Release $TAG_NAME")
-
-echo "Signing pkg with Sparkle EdDSA key..."
-SIGN_OUTPUT=$("$SPARKLE_BIN_DIR/sign_update" "$PKG_PATH")
+# ---------------------------------------------------------------- 4. appcast
+echo "▶ 6/7 Signing for Sparkle and updating appcast.xml..."
+SIGN_OUTPUT=$("$SIGN_UPDATE" "$PKG_PATH")
 ED_SIGNATURE=$(echo "$SIGN_OUTPUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')
 FILE_LENGTH=$(echo "$SIGN_OUTPUT" | sed -n 's/.*length="\([^"]*\)".*/\1/p')
-
 if [ -z "$ED_SIGNATURE" ] || [ -z "$FILE_LENGTH" ]; then
-    echo "❌ Error: sign_update did not return a signature. Output was:"
-    echo "$SIGN_OUTPUT"
+    echo "❌ sign_update returned no signature. Output was: $SIGN_OUTPUT"
     exit 1
 fi
 
-PUB_DATE=$(date -u +"%a, %d %b %Y %H:%M:%S %z")
-DOWNLOAD_URL="https://raw.githubusercontent.com/$GITHUB_USERNAME/RemoConServer-Releases/main/$PKG_NAME"
+PUB_DATE=$(LC_ALL=C date -u +"%a, %d %b %Y %H:%M:%S +0000")
+DOWNLOAD_URL="https://raw.githubusercontent.com/$GITHUB_USERNAME/$REPO_NAME/main/$PKG_NAME"
 
-echo "Updating appcast.xml..."
+# Make sure local repo is current before editing appcast.xml
+if [ -d "$RELEASE_DIR/.git" ]; then
+    git -C "$RELEASE_DIR" pull --rebase --autostash origin main || true
+fi
+
 python3 - "$APPCAST_PATH" "$VERSION" "$BUILD_NUMBER" "$PUB_DATE" "$DOWNLOAD_URL" "$FILE_LENGTH" "$ED_SIGNATURE" "$MIN_OS_VERSION" << 'PYEOF'
 import sys
 import xml.etree.ElementTree as ET
@@ -155,23 +283,23 @@ try:
 except (FileNotFoundError, ET.ParseError):
     root = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(root, "channel")
-    title = ET.SubElement(channel, "title")
-    title.text = "RemoConServer"
+    ET.SubElement(channel, "title").text = "RemoConServer"
     tree = ET.ElementTree(root)
 
+# Drop any older entry for the same build number
+for old in list(channel.findall("item")):
+    v = old.find("{%s}version" % NS)
+    if v is not None and v.text == build_number:
+        channel.remove(old)
+
 item = ET.Element("item")
-t = ET.SubElement(item, "title")
-t.text = version
-pd = ET.SubElement(item, "pubDate")
-pd.text = pub_date
-sv = ET.SubElement(item, "{%s}version" % NS)
-sv.text = build_number
-ssv = ET.SubElement(item, "{%s}shortVersionString" % NS)
-ssv.text = version
+ET.SubElement(item, "title").text = version
+ET.SubElement(item, "pubDate").text = pub_date
+ET.SubElement(item, "{%s}version" % NS).text = build_number
+ET.SubElement(item, "{%s}shortVersionString" % NS).text = version
 if min_os:
-    mv = ET.SubElement(item, "{%s}minimumSystemVersion" % NS)
-    mv.text = min_os
-enclosure = ET.SubElement(item, "enclosure", {
+    ET.SubElement(item, "{%s}minimumSystemVersion" % NS).text = min_os
+ET.SubElement(item, "enclosure", {
     "url": url,
     "length": length,
     "type": "application/octet-stream",
@@ -179,37 +307,52 @@ enclosure = ET.SubElement(item, "enclosure", {
     "{%s}edSignature" % NS: ed_sig,
 })
 
-first_item_index = len(list(channel))
+idx = len(list(channel))
 for i, child in enumerate(channel):
     if child.tag == "item":
-        first_item_index = i
+        idx = i
         break
-channel.insert(first_item_index, item)
+channel.insert(idx, item)
 
 ET.indent(tree, space="    ")
 tree.write(appcast_path, encoding="utf-8", xml_declaration=True)
-print(f"✅ appcast.xml updated with {version} ({build_number})")
+
+# Re-parse to prove the file is valid XML before it gets published
+ET.parse(appcast_path)
+print("   appcast.xml updated and validated: %s (%s)" % (version, build_number))
 PYEOF
 
-rm -rf "$PAYLOAD_DIR" "$SCRIPTS_DIR" "$ENTITLEMENTS_FILE"
+# ---------------------------------------------------------------- 5. publish
+echo "▶ 7/7 Publishing to GitHub..."
+ORIGINAL_COMMIT_MSG="Release $TAG_NAME"
 
-echo "Deploying to GitHub Releases..."
 cd "$RELEASE_DIR"
 if [ ! -d ".git" ]; then
     git init
-    git remote add origin "$GITHUB_REPO_URL"
+    git remote add origin "https://github.com/$GITHUB_USERNAME/$REPO_NAME.git"
     git branch -M main
 fi
 
+# Never commit secrets or build leftovers
+touch .gitignore
+for pattern in "release.config" ".DS_Store"; do
+    grep -qxF "$pattern" .gitignore || echo "$pattern" >> .gitignore
+done
+
 git add .
 git commit -m "Update appcast for release $TAG_NAME" || true
-git pull --rebase origin main
-git push origin main
+git pull --rebase --autostash origin main
+retry 3 5 git push origin main
 
-gh release create "$TAG_NAME" "$PKG_PATH" \
-    --repo "$GITHUB_USERNAME/RemoConServer-Releases" \
-    --title "RemoConServer $TAG_NAME" \
-    --notes "$ORIGINAL_COMMIT_MSG" \
-    --clobber
+if gh release view "$TAG_NAME" --repo "$GITHUB_USERNAME/$REPO_NAME" >/dev/null 2>&1; then
+    gh release upload "$TAG_NAME" "$PKG_PATH" --repo "$GITHUB_USERNAME/$REPO_NAME" --clobber
+else
+    gh release create "$TAG_NAME" "$PKG_PATH" \
+        --repo "$GITHUB_USERNAME/$REPO_NAME" \
+        --title "RemoConServer $TAG_NAME" \
+        --notes "$ORIGINAL_COMMIT_MSG"
+fi
 
-echo "✅ Success! PKG signed, notarized, appcast updated, and deployed."
+rm -rf "$WORK_DIR"
+echo "✅ Done: $TAG_NAME (build $BUILD_NUMBER) archived, signed, notarized, appcast updated, published."
+echo "   Note: raw.githubusercontent.com can serve the old appcast for a few minutes."
