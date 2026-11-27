@@ -18,12 +18,25 @@ fi
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 
-for var in PROJECT_DIR SCHEME RELEASE_DIR GITHUB_USERNAME APPLE_ID TEAM_ID APP_PASS PKG_SIGNING_IDENTITY; do
+# Notarization credentials: prefer a keychain profile (NOTARY_PROFILE, created once with
+# `xcrun notarytool store-credentials <name>`) so the app password never appears in `ps`.
+# Falls back to APPLE_ID + APP_PASS when no profile is configured.
+REQUIRED_VARS=(PROJECT_DIR SCHEME RELEASE_DIR GITHUB_USERNAME TEAM_ID PKG_SIGNING_IDENTITY)
+if [ -z "${NOTARY_PROFILE:-}" ]; then
+    REQUIRED_VARS+=(APPLE_ID APP_PASS)
+fi
+for var in "${REQUIRED_VARS[@]}"; do
     if [ -z "${!var:-}" ]; then
         echo "❌ $var is empty in $CONFIG_FILE"
         exit 1
     fi
 done
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+    NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+else
+    echo "⚠️  Using APP_PASS on the command line; set NOTARY_PROFILE in $CONFIG_FILE to use the keychain instead."
+    NOTARY_AUTH=(--apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASS")
+fi
 
 REPO_NAME="RemoConServer-Releases"
 APPCAST_PATH="$RELEASE_DIR/appcast.xml"
@@ -186,6 +199,11 @@ PKG_NAME="RemoConServer_$TAG_NAME.pkg"
 PKG_PATH="$RELEASE_DIR/$PKG_NAME"
 echo "   version $VERSION (build $BUILD_NUMBER), bundle id $BUNDLE_ID"
 
+# Make sure the local release repo is current before checking/editing appcast.xml
+if [ -d "$RELEASE_DIR/.git" ]; then
+    git -C "$RELEASE_DIR" pull --rebase --autostash origin main || true
+fi
+
 # Guard: Sparkle compares build numbers; refuse to publish one that is already in the appcast.
 if [ -f "$APPCAST_PATH" ] && grep -q "<sparkle:version>$BUILD_NUMBER</sparkle:version>" "$APPCAST_PATH"; then
     echo "❌ Build number $BUILD_NUMBER is already in appcast.xml."
@@ -219,9 +237,16 @@ exit 0
 EOF
 chmod +x "$SCRIPTS_DIR/postinstall"
 
+# pkgbuild marks bundles relocatable by default: Installer would then update any other copy of
+# the app with the same bundle id (Downloads, backups, old builds) instead of /Applications.
+COMPONENT_PLIST="$WORK_DIR/component.plist"
+pkgbuild --analyze --root "$PAYLOAD_DIR" "$COMPONENT_PLIST"
+plutil -replace 0.BundleIsRelocatable -bool NO "$COMPONENT_PLIST"
+
 mkdir -p "$RELEASE_DIR"
 rm -f "$PKG_PATH"
 pkgbuild --root "$PAYLOAD_DIR" \
+         --component-plist "$COMPONENT_PLIST" \
          --install-location "/Applications" \
          --scripts "$SCRIPTS_DIR" \
          --identifier "$BUNDLE_ID" \
@@ -233,17 +258,14 @@ pkgbuild --root "$PAYLOAD_DIR" \
 # ---------------------------------------------------------------- 3. notarize
 echo "▶ 5/7 Notarizing (waits for Apple)..."
 NOTARY_OUT=$(xcrun notarytool submit "$PKG_PATH" \
-    --apple-id "$APPLE_ID" \
-    --team-id "$TEAM_ID" \
-    --password "$APP_PASS" \
+    "${NOTARY_AUTH[@]}" \
     --wait 2>&1) || true
 echo "$NOTARY_OUT"
 if ! echo "$NOTARY_OUT" | grep -q "status: Accepted"; then
     echo "❌ Notarization was not accepted. Apple's log for this submission:"
     SUBMISSION_ID=$(echo "$NOTARY_OUT" | sed -n 's/^ *id: *\([0-9a-f-]\{36\}\).*/\1/p' | head -n 1)
     if [ -n "$SUBMISSION_ID" ]; then
-        xcrun notarytool log "$SUBMISSION_ID" \
-            --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASS" || true
+        xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_AUTH[@]}" || true
     fi
     exit 1
 fi
@@ -262,12 +284,7 @@ fi
 PUB_DATE=$(LC_ALL=C date -u +"%a, %d %b %Y %H:%M:%S +0000")
 DOWNLOAD_URL="https://raw.githubusercontent.com/$GITHUB_USERNAME/$REPO_NAME/main/$PKG_NAME"
 
-# Make sure local repo is current before editing appcast.xml
-if [ -d "$RELEASE_DIR/.git" ]; then
-    git -C "$RELEASE_DIR" pull --rebase --autostash origin main || true
-fi
-
-python3 - "$APPCAST_PATH" "$VERSION" "$BUILD_NUMBER" "$PUB_DATE" "$DOWNLOAD_URL" "$FILE_LENGTH" "$ED_SIGNATURE" "$MIN_OS_VERSION" << 'PYEOF'
+python3 -I - "$APPCAST_PATH" "$VERSION" "$BUILD_NUMBER" "$PUB_DATE" "$DOWNLOAD_URL" "$FILE_LENGTH" "$ED_SIGNATURE" "$MIN_OS_VERSION" << 'PYEOF'
 import sys
 import xml.etree.ElementTree as ET
 
@@ -282,9 +299,11 @@ try:
     channel = root.find("channel")
 except (FileNotFoundError, ET.ParseError):
     root = ET.Element("rss", {"version": "2.0"})
+    channel = None
+    tree = ET.ElementTree(root)
+if channel is None:
     channel = ET.SubElement(root, "channel")
     ET.SubElement(channel, "title").text = "RemoConServer"
-    tree = ET.ElementTree(root)
 
 # Drop any older entry for the same build number
 for old in list(channel.findall("item")):
@@ -335,6 +354,10 @@ fi
 
 # Never commit secrets or build leftovers
 touch .gitignore
+# Ensure the file ends with a newline so appended patterns don't merge into the last line
+if [ -s .gitignore ] && [ -n "$(tail -c 1 .gitignore)" ]; then
+    echo "" >> .gitignore
+fi
 for pattern in "release.config" ".DS_Store"; do
     grep -qxF "$pattern" .gitignore || echo "$pattern" >> .gitignore
 done
